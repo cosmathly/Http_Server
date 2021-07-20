@@ -2,6 +2,9 @@
 #define _Reactor_
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <bits/types.h>
 #include "Thread_Pool.h"
 typedef unsigned int uint32_t;
 extern const int port;
