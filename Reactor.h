@@ -6,18 +6,32 @@
 #include <fcntl.h>
 #include <bits/types.h>
 #include "Thread_Pool.h"
+#include "Keep_Alive.h"
+#include "Log.h"
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <iostream>
+#include <signal.h>
+#include <strings.h>
+#include <sys/epoll.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <assert.h>
 typedef unsigned int uint32_t;
 extern const int port;
 extern const int max_event_number;
 extern const int max_conn_fd_number;
 extern void set_nonblocking(int fd);
 extern void server_initial(int &listen_fd);
+typedef std::string Record;
 class myepoll
 {
       private:
          int epoll_fd;
       public:
          myepoll(int _epoll_fd_);
+         ~myepoll();
          void add_fd(int to_add_fd, bool if_set_epolloneshot = true);
          void del_fd(int to_del_fd);
          void mod_fd(int to_mod_fd, uint32_t new_listen_event);
@@ -35,26 +49,14 @@ class client
         char *read_buf = {nullptr};
         int write_out_content_len = {0};
         int have_write_content_len = {0};
-        bool whether_keep_alive = {false};
         char *write_buf = {nullptr};
+        bool whether_keep_alive = {false};
         void init(int sockfd_for_client, const struct sockaddr_in &cur_client_addr);
+        void make_record(Record &cur_record);
         client();
         ~client();
-        void close_conn();
+        void close_conn(bool flag);
         bool cli_read();
         void cli_write();
 };
-namespace critical_object
-{
-        extern myepoll epoll;
-        extern client *all_client;
-        extern epoll_event *all_ready_event;
-        extern int listen_fd;
-        extern Thread_Pool thread_pool;
-}
-using critical_object::epoll;
-using critical_object::all_client;
-using critical_object::all_ready_event;
-using critical_object::listen_fd;
-using critical_object::thread_pool;
 #endif

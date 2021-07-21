@@ -3,17 +3,19 @@ const char *error_400 = "HTTP request can not been parsed by server";
 const char *error_403 = "Server do not provide this kind of http request";
 const char *error_404 = "Resource can not been found";
 const char *doc_path = "/home/cosmathly/Linux/http_server/resources";
+extern client *all_client;
+extern myepoll epoll;
 mylock::mylock() { pthread_mutex_init(&mymutex, nullptr); }
 mylock::~mylock() { pthread_mutex_destroy(&mymutex); }
 void mylock::lock() { pthread_mutex_lock(&mymutex); }
+int mylock::trylock() { return pthread_mutex_trylock(&mymutex); }
 void mylock::unlock() { pthread_mutex_unlock(&mymutex); }
-std::queue<int> Thread_Pool::task_queue = { };
 mylock Thread_Pool::lock_of_task_queue = { };
-mysem::mysem(int value = 0) { sem_init(&sem, 0, value); }
+mysem::mysem() { sem_init(&sem, 0, 0); }
 mysem::~mysem() { sem_destroy(&sem); }
-void mysem::wait() { sem_wait(&sem); }
-void mysem::post() { sem_post(&sem); }
-mysem Thread_Pool::sem_for_task_num = {0};
+int mysem::wait() { return sem_wait(&sem); }
+int mysem::post() { return sem_post(&sem); }
+mysem Thread_Pool::sem_for_task_num = {};
 bool Thread_Pool::whether_stop = {false};
 Thread_Pool::Thread_Pool(int _thread_num, int _max_task_num):thread_num(_thread_num), max_task_num(_max_task_num)
 {
@@ -45,12 +47,12 @@ void Thread_Pool::add_task(int task_sockfd)
      if(task_queue.size()==max_task_num) 
      { 
        lock_of_task_queue.unlock(); 
-       all_client[task_sockfd].close_conn(); 
+       all_client[task_sockfd].close_conn(true); 
        return ;
      }
      task_queue.push(task_sockfd);
-     sem_for_task_num.post();
      lock_of_task_queue.unlock();
+     //sem_for_task_num.post();
 }
 void * Thread_Pool::work(void *arg)
 {
@@ -59,15 +61,20 @@ void * Thread_Pool::work(void *arg)
        int task_sockfd;
        Parse_Sta_Code parse_sta_code;
        while(whether_stop==false)
-       {
+       {   
+            //sem_for_task_num.wait();
             lock_of_task_queue.lock();
-            sem_for_task_num.wait();
-            task_sockfd = task_queue.front();
-            task_queue.pop();
+            if(thread_pool->task_queue.empty()==true)
+            {
+              lock_of_task_queue.unlock();
+              continue;
+            }
+            task_sockfd = thread_pool->task_queue.front();
+            thread_pool->task_queue.pop();
             lock_of_task_queue.unlock();
             parse_sta_code = thread_pool->http_parse(task_sockfd, parse_info);
-            all_client[task_sockfd].read_in_content_len = 0;
             thread_pool->http_response(task_sockfd, (const Parse_Info *)parse_info, parse_sta_code);
+            epoll.mod_fd(task_sockfd, EPOLLOUT);
        }
        delete parse_info;
        return thread_pool;
@@ -92,8 +99,8 @@ Parse_Sta_Code Thread_Pool::http_parse_line(int &cur_idx, int to_parse_sockfd, P
      read_str[cur_idx] = '\0';
      for(int i = cur_idx-1; i >= tmp_idx; --i)
      if(read_str[i]=='/') { tmp_idx = i; break; }
-     if(strcasecmp(read_str+tmp_idx, "/index.html")!=0) return Not_Found;
-     parse_info->request_content = "/index.html";
+     if(strcasecmp(read_str+tmp_idx, "/index.html")!=0&&strcasecmp(read_str+tmp_idx, "/images/image1.jpg")!=0) return Not_Found;
+     parse_info->request_content = (char *)((strcasecmp(read_str+tmp_idx, "/index.html")==0)?("/index.html"):("/images/image1.jpg"));
      ++cur_idx;
      tmp_idx = cur_idx;
      while(cur_idx<read_str_len&&read_str[cur_idx]!='\r') ++cur_idx;
@@ -197,6 +204,7 @@ Parse_Sta_Code Thread_Pool::http_parse(int to_parse_sockfd, Parse_Info *parse_in
                break;
           }
      }
+     all_client[to_parse_sockfd].read_in_content_len = 0;
      return OK;
 }
 void Thread_Pool::add_response(char *add_pos, const char *add_content)
@@ -229,16 +237,103 @@ void Thread_Pool::http_response_line(int &cur_idx, int to_response_sockfd, Parse
           break;
      }
 }
-void Thread_Pool::http_response_header(int &cur_idx,int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code)
+void Thread_Pool::http_response_header_content_length(int &cur_idx, int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code)
 {
-     char *file_path = ()
+     char *write_str = all_client[to_response_sockfd].write_buf;
+     char *response_content_length = new char[50];
+     char *file_path = nullptr;
+     struct stat file_info;
+     switch(parse_sta_code)
+     {
+          case OK:
+          file_path = new char[strlen(doc_path)+strlen(parse_info->request_content)+1];
+          file_path[strlen(doc_path)+strlen(parse_info->request_content)] = '\0';
+          sprintf(file_path, "%s%s", doc_path, parse_info->request_content);
+          stat((const char *)file_path, &file_info);
+          delete [] file_path;
+          sprintf(response_content_length, "Content-Length: %ld\r\n", file_info.st_size);
+          break;
+          case Bad_Request:
+          sprintf(response_content_length, "Content-Length: %d\r\n", strlen(error_400));
+          break;
+          case Forbidden:
+          sprintf(response_content_length, "Content-Length: %d\r\n", strlen(error_403));
+          break;
+          case Not_Found:
+          sprintf(response_content_length, "Content-Length: %d\r\n", strlen(error_404));
+          break;
+     }
+     add_response(write_str+cur_idx, response_content_length);
+     cur_idx += strlen(response_content_length);
+     delete [] response_content_length;
+}
+void Thread_Pool::http_response_header_content_type(int &cur_idx, int to_response_sockfd)
+{
+     char *write_str = all_client[to_response_sockfd].write_buf;
+     char *response_content_type = new char[50];
+     sprintf(response_content_type, "Content-Type: text/html\r\n");
+     add_response(write_str+cur_idx, response_content_type);
+     cur_idx += strlen(response_content_type);
+     delete [] response_content_type;
+}
+void Thread_Pool::http_response_header_connection(int &cur_idx, int to_response_sockfd)
+{
+     char *write_str = all_client[to_response_sockfd].write_buf;
+     bool whether_keep_alive = all_client[to_response_sockfd].whether_keep_alive;
+     char *response_connection = new char[50];   
+     sprintf(response_connection, "Connection: %s\r\n", (whether_keep_alive==true)?("keep-alive"):("close"));
+     add_response(write_str+cur_idx, response_connection);
+     cur_idx += strlen(response_connection);
+     delete [] response_connection;
+}
+void Thread_Pool::http_response_header(int &cur_idx, int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code)
+{
+     http_response_header_content_length(cur_idx, to_response_sockfd, parse_info, parse_sta_code);
+     http_response_header_content_type(cur_idx, to_response_sockfd);
+     http_response_header_connection(cur_idx, to_response_sockfd);
+}
+void Thread_Pool::http_response_empty_line(int &cur_idx, int to_response_sockfd)
+{
+     char *write_str = all_client[to_response_sockfd].write_buf;
+     add_response(write_str+cur_idx, "\r\n");
+     cur_idx += 2;
+}
+void Thread_Pool::http_response_body(int &cur_idx, int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code)
+{
+     char *write_str = all_client[to_response_sockfd].write_buf;
+     char *file_path = nullptr;
+     int fd = {-1};
+     struct stat file_info;
+     switch(parse_sta_code)
+     {
+          case OK:
+          file_path = new char[strlen(doc_path)+strlen(parse_info->request_content)+1];
+          file_path[strlen(doc_path)+strlen(parse_info->request_content)] = '\0';
+          sprintf(file_path, "%s%s", doc_path, parse_info->request_content);
+          fd = open((const char *)file_path, O_RDONLY);
+          stat((const char *)file_path, &file_info);
+          read(fd, (void *)(write_str+cur_idx), file_info.st_size);
+          cur_idx += file_info.st_size;
+          delete [] file_path;
+          break;
+          case Bad_Request:
+          add_response(write_str+cur_idx, error_400);
+          cur_idx += strlen(error_400);
+          break;
+          case Forbidden:
+          add_response(write_str+cur_idx, error_403);
+          cur_idx += strlen(error_403);
+          break;
+          case Not_Found:
+          add_response(write_str+cur_idx, error_404);
+          cur_idx += strlen(error_404);
+          break;
+     }
 }
 void Thread_Pool::http_response(int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code)
 {
      if(all_client[to_response_sockfd].write_buf==nullptr) 
      all_client[to_response_sockfd].write_buf = new char[all_client[to_response_sockfd].write_buf_size];
-     all_client[to_response_sockfd].write_out_content_len = 0;
-     all_client[to_response_sockfd].have_write_content_len = 0;
      Response_Sta cur_response_sta = response_line;
      int cur_idx = 0;
      while(cur_response_sta!=response_end)
@@ -263,4 +358,6 @@ void Thread_Pool::http_response(int to_response_sockfd, const Parse_Info *parse_
                break;
           }
      }
+     all_client[to_response_sockfd].write_out_content_len = cur_idx;
+     all_client[to_response_sockfd].have_write_content_len = 0;
 }

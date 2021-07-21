@@ -1,2 +1,5 @@
 #ignore *.o file
 *.o
+http_server
+webbench-1.5.tar.gz
+webbench-1.5/

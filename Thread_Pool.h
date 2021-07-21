@@ -5,6 +5,9 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <iostream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <string.h>
 #include "Reactor.h"
 class mylock
@@ -15,17 +18,18 @@ class mylock
         mylock();
         ~mylock();
         void lock();
+        int trylock();
         void unlock();
 };
 class mysem
 {
-      private:
+      public:
         sem_t sem;
       public:
-        mysem(int value = 0);
+        mysem();
         ~mysem();
-        void wait();
-        void post();
+        int wait();
+        int post();
 };
 class Parse_Info
 {
@@ -41,12 +45,13 @@ enum Parse_Sta_Code {OK=200, Bad_Request=400, Forbidden=403, Not_Found=404};
 extern const char *error_400;
 extern const char *error_403;
 extern const char *error_404;
+class Thread_Pool;
 class Thread_Pool
 {
       private:
         static mylock lock_of_task_queue;
         static mysem sem_for_task_num;
-        static std::queue<int> task_queue;
+        std::queue<int> task_queue;
         int max_task_num = {10000};
         int thread_num = {4};
         static bool whether_stop;
@@ -63,7 +68,10 @@ class Thread_Pool
         void add_response(char *add_pos, const char *add_content);
         void http_response(int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code);
         void http_response_line(int &cur_idx, int to_response_sockfd, Parse_Sta_Code parse_sta_code);
-        void http_response_header(int &cur_idx,int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code);
+        void http_response_header(int &cur_idx, int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code);
+        void http_response_header_content_length(int &cur_idx, int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code);
+        void http_response_header_content_type(int &cur_idx, int to_response_sockfd);
+        void http_response_header_connection(int &cur_idx, int to_response_sockfd);
         void http_response_empty_line(int &cur_idx, int to_response_sockfd);
         void http_response_body(int &cur_idx, int to_response_sockfd, const Parse_Info *parse_info, Parse_Sta_Code parse_sta_code);
         static void * work(void *arg);
